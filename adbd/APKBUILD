@@ -1,7 +1,7 @@
 # Contributor: Mio Naganohara <mio@meow.business>
 # Maintainer: Mio Naganohara <mio@meow.business>
 pkgname=adbd
-pkgver=36.0.1
+pkgver=37.0.0p1
 pkgrel=0
 pkgdesc="Standalone Linux Android Debug Bridge daemon (FunctionFS USB transport)"
 url="https://github.com/nmeum/android-tools"
