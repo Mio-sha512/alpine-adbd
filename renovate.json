@@ -1,0 +1,29 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "mode": "full",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track nmeum/android-tools releases via pkgver in the APKBUILD",
+      "fileMatch": ["^adbd/APKBUILD$"],
+      "matchStrings": ["pkgver=(?<currentValue>[0-9a-zA-Z._-]+)"],
+      "depNameTemplate": "nmeum/android-tools",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "android-tools bumps: CI refreshes sums and builds; maintainer merges after review",
+      "matchDepNames": ["nmeum/android-tools"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Only nmeum bumps flow through fixup-sums; pinned action SHAs are refreshed deliberately",
+      "matchManagers": ["github-actions"],
+      "enabled": false
+    }
+  ]
+}
