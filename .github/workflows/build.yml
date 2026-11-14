@@ -1,0 +1,416 @@
+name: build
+
+# pull_request_target (not pull_request): the workflow file executed is
+# always the one from the BASE branch, so a tampered branch can never
+# change the job definitions. Untrusted PR content only ever enters via
+# explicit checkouts/mounts, gated below. Without it, anyone able to push
+# a renovate/* branch could rewrite this file and get the tokens below.
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+  workflow_dispatch:
+    inputs:
+      pr_sha:
+        description: 'PR head SHA to report check statuses on (used by fixup-sums)'
+        required: false
+        type: string
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    if: >-
+      github.event_name != 'pull_request_target'
+      || (startsWith(github.head_ref, 'renovate/')
+          && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64,  platform: linux/amd64,   machine: 'x86-64',        tc: '',                            apt: ''}
+          - {arch: aarch64, platform: linux/arm64,   machine: 'aarch64',       tc: aarch64-linux-gnu.cmake,       apt: 'gcc-aarch64-linux-gnu g++-aarch64-linux-gnu'}
+          - {arch: armv7,   platform: linux/arm/v7,  machine: 'ELF 32-bit.*ARM', tc: armv7-linux-gnueabihf.cmake, apt: 'gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf'}
+          - {arch: riscv64, platform: linux/riscv64, machine: 'RISC-V',        tc: riscv64-linux-gnu.cmake,       apt: 'gcc-riscv64-linux-gnu g++-riscv64-linux-gnu'}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: matrix.platform != 'linux/amd64'
+        with:
+          platforms: all
+
+      - name: cross-compile adbd (${{ matrix.arch }})
+        run: |
+          # Compile inside a pinned image rather than on the runner: adb's
+          # sysdeps.h probes __has_include("google/protobuf/..."), so any
+          # stray protobuf headers in the environment drag absl into the
+          # link. A controlled image keeps the answer deterministic.
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e WORK=/src/work/${{ matrix.arch }} \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            ${{ matrix.tc && format('-e CMAKE_TOOLCHAIN_FILE=/src/cmake/toolchains/{0}', matrix.tc) || '' }} \
+            ubuntu@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 \
+            sh -ec '
+              # ubuntu:26.04
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                build-essential cmake ninja-build curl ca-certificates \
+                xz-utils patch ${{ matrix.apt }}
+              ./scripts/build-local.sh
+              chown -R "$HOST_UID:$HOST_GID" "$WORK"'
+          bin=$(ls work/${{ matrix.arch }}/build-*/vendor/adbd)
+          file "$bin" | grep -q '${{ matrix.machine }}'
+          readelf -h "$bin" >/dev/null
+          ! readelf -d "$bin" | grep -q NEEDED
+          cp "$bin" work/${{ matrix.arch }}/adbd
+
+      - name: package apk (${{ matrix.arch }})
+        run: |
+          bin=$(readlink -f "$(ls work/${{ matrix.arch }}/build-*/vendor/adbd)")
+          docker run --rm --platform=${{ matrix.platform }} \
+            -v "$PWD/adbd:/adbd-ro:ro" -v "$bin:/prebuilt/adbd:ro" \
+            alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf sh -ec '
+              cp -r /adbd-ro /tmp/adbd && cd /tmp/adbd
+              apk add --no-cache abuild openssl build-base
+              abuild-keygen -a -n
+              cp ~/.abuild/*.rsa.pub /etc/apk/keys/
+              echo "REPODEST=/root/packages" >> ~/.abuild/abuild.conf
+              ADBD_PREBUILT=/prebuilt/adbd abuild -F
+              for a in $(find /root/packages -name "*.apk"); do
+                tar -xzf "$a" -O .PKGINFO \
+                  | grep -qE "arch = (${{ matrix.arch }}|noarch)" \
+                  || { echo "wrong arch in $a"; exit 1; }
+              done'
+
+      - name: upload binary (${{ matrix.arch }})
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: adbd-bin-${{ matrix.arch }}
+          path: work/${{ matrix.arch }}/adbd
+          if-no-files-found: error
+          retention-days: 5
+
+  fixup-sums:
+    if: >-
+      github.event_name == 'pull_request_target'
+      && startsWith(github.head_ref, 'renovate/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: read
+    runs-on: ubuntu-26.04
+    steps:
+      - name: gate PR authorship + diff shape
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -e
+          author=$(gh pr view "$PR" -R "${{ github.repository }}" \
+            --json author --jq .author.login)
+          # Mend-hosted app authors PRs as "app/renovate"; self-hosted uses "renovate[bot]"
+          [ "$author" = "renovate[bot]" ] || [ "$author" = "app/renovate" ] \
+            || { echo "::error::unexpected PR author: $author"; exit 1; }
+          gh api "repos/${{ github.repository }}/pulls/$PR/commits" --paginate \
+            --jq '.[].author.login' | sort -u > /tmp/authors.txt
+          cat /tmp/authors.txt
+          ! grep -vxE 'renovate\[bot\]|github-actions\[bot\]' /tmp/authors.txt \
+            || { echo "::error::non-automation commits on branch"; exit 1; }
+          files=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" \
+            --paginate --jq '.[].filename' | sort -u)
+          [ "$files" = "adbd/APKBUILD" ] \
+            || { echo "::error::PR touches more than adbd/APKBUILD: $files"; exit 1; }
+          gh pr diff "$PR" -R "${{ github.repository }}" \
+            | grep -E '^[+-]' | grep -v '^[+-]\{3\}' > /tmp/difflines || true
+          ! grep -vE '^[+-](_upstream=[0-9a-zA-Z._-]+|pkgver=[0-9a-zA-Z._-]+|sha512sums="?|"?|[0-9a-f]{128}[[:space:]]+[^[:space:]]+)[[:space:]]*$' \
+            /tmp/difflines || { cat /tmp/difflines; \
+              echo "::error::diff contains unexpected lines"; exit 1; }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - name: refresh sha512sums
+        run: |
+          cp -r adbd /tmp/fixup
+          # container root has CAP_DAC_OVERRIDE dropped; make the mount writable
+          chmod -R a+w /tmp/fixup
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            -v /tmp/fixup:/adbd -w /adbd \
+            alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf sh -ec '
+              apk add --no-cache abuild
+              # checksum alone fetches (sumalgo=none) and rewrites the sums
+              # block; a prior fetch step would die on the stale sums first
+              abuild -F checksum'
+          cp /tmp/fixup/APKBUILD adbd/APKBUILD
+          # the container must only have rewritten sum lines
+          git diff -U0 -- adbd/APKBUILD | grep -E '^[+-]' | grep -v '^[+-]\{3\}' \
+            > /tmp/sumlines || true
+          ! grep -vE '^[+-]([0-9a-f]{128}[[:space:]]+[^[:space:]]+|sha512sums="?|"?)[[:space:]]*$' \
+            /tmp/sumlines || { cat /tmp/sumlines; \
+              echo "::error::checksum rewrite touched non-sum lines"; exit 1; }
+
+      - name: pin sums to upstream release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=$(sed -n 's/^_upstream=//p' adbd/APKBUILD)
+          sum=$(sed -n '/^sha512sums="/,/^"/p' adbd/APKBUILD \
+            | grep "  android-tools-$v\.tar\.xz$" | awk '{print $1}')
+          [ -n "$sum" ] \
+            || { echo "::error::no sum entry for android-tools-$v"; exit 1; }
+          if gh api "repos/nmeum/android-tools/releases/tags/$v" --jq .body \
+            | grep -q '[0-9a-f]\{128\}'; then
+            gh api "repos/nmeum/android-tools/releases/tags/$v" --jq .body \
+              | grep -q "$sum" \
+              || { echo "::error::sha512 $sum absent from upstream $v release notes"; exit 1; }
+            echo "upstream $v release notes confirm sha512 $sum"
+          else
+            echo "::warning::upstream $v release notes carry no sha512; sum taken from tarball only"
+          fi
+
+      - name: commit refreshed sums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          git add adbd/APKBUILD
+          if git diff --cached --quiet; then
+            echo "sums already current"
+          else
+            git commit -m 'adbd: refresh sha512sums for upstream bump'
+            git push origin "HEAD:$HEAD_REF"
+            # token pushes don't retrigger workflows; dispatch a verify run
+            # on the branch and pass the new head sha so the report-checks
+            # job can post real statuses on it (dispatched check runs do not
+            # satisfy required checks; commit statuses do)
+            sha=$(git rev-parse HEAD)
+            gh workflow run build.yml --ref "$HEAD_REF" -f pr_sha="$sha" || {
+              for a in x86_64 aarch64 armv7 riscv64; do
+                gh api "repos/${{ github.repository }}/statuses/$sha" \
+                  -f state=failure -f context="apk ($a)" \
+                  -f description="verify dispatch failed; rerun fixup-sums"
+              done
+              exit 1
+            }
+          fi
+
+  report-checks:
+    needs: apk
+    if: inputs.pr_sha != ''
+    runs-on: ubuntu-26.04
+    permissions:
+      statuses: write
+    steps:
+      - name: post success statuses on PR head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ inputs.pr_sha }}
+        run: |
+          for a in x86_64 aarch64 armv7 riscv64; do
+            gh api "repos/${{ github.repository }}/statuses/$SHA" \
+              -f state=success -f context="apk ($a)" \
+              -f description="verified by dispatched build" \
+              -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          done
+
+  release:
+    needs: apk
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request_target'
+    environment: release
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64,  platform: linux/amd64,   machine: 'x86-64'}
+          - {arch: aarch64, platform: linux/arm64,   machine: 'aarch64'}
+          - {arch: armv7,   platform: linux/arm/v7,  machine: 'ELF 32-bit.*ARM'}
+          - {arch: riscv64, platform: linux/riscv64, machine: 'RISC-V'}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: matrix.platform != 'linux/amd64'
+        with:
+          platforms: all
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: adbd-bin-${{ matrix.arch }}
+          path: bin
+
+      - name: verify binary (${{ matrix.arch }})
+        run: |
+          file bin/adbd | grep -q '${{ matrix.machine }}'
+          readelf -h bin/adbd >/dev/null
+          ! readelf -d bin/adbd | grep -q NEEDED
+
+      - name: package + sign (${{ matrix.arch }})
+        env:
+          ABUILD_PRIVATE_KEY: ${{ secrets.ABUILD_PRIVATE_KEY }}
+        run: |
+          [ -n "$ABUILD_PRIVATE_KEY" ] \
+            || { echo "::error::ABUILD_PRIVATE_KEY secret is not set"; exit 1; }
+          bin=$(readlink -f bin/adbd)
+          mkdir -p out
+          docker run --rm --platform=${{ matrix.platform }} \
+            -v "$PWD/adbd:/adbd-ro:ro" -v "$bin:/prebuilt/adbd:ro" \
+            -v "$PWD/out:/out" -e ABUILD_PRIVATE_KEY \
+            alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf sh -ec '
+              cp -r /adbd-ro /tmp/adbd && cd /tmp/adbd
+              apk add --no-cache abuild openssl build-base
+              mkdir -p ~/.abuild
+              printf "%s\n" "$ABUILD_PRIVATE_KEY" > ~/.abuild/alpine-adbd.rsa
+              chmod 600 ~/.abuild/alpine-adbd.rsa
+              openssl rsa -in ~/.abuild/alpine-adbd.rsa -pubout \
+                -out ~/.abuild/alpine-adbd.rsa.pub
+              printf "PACKAGER_PRIVKEY=\"%s/.abuild/alpine-adbd.rsa\"\nREPODEST=/root/packages\n" \
+                "$HOME" > ~/.abuild/abuild.conf
+              cp ~/.abuild/alpine-adbd.rsa.pub /etc/apk/keys/
+              ADBD_PREBUILT=/prebuilt/adbd abuild -F
+              mkdir -p /out/repo
+              cp -r /root/packages/* /out/repo/
+              cp ~/.abuild/alpine-adbd.rsa.pub /out/'
+
+      - name: upload repo artifacts (${{ matrix.arch }})
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: adbd-apk-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish apk repo
+    needs: [apk, release]
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-26.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: adbd-apk-*
+          path: artifacts
+
+      - name: assemble pages tree
+        run: |
+          set -e
+          mkdir -p pages
+          # all four arches must be present -- a missing leg must never
+          # silently shrink the published repo; copy from each artifact's
+          # own dir so a stray artifact can't smuggle files into an arch
+          for a in x86_64 aarch64 armv7 riscv64; do
+            d="artifacts/adbd-apk-$a"
+            [ -d "$d" ] \
+              || { echo "::error::missing artifact adbd-apk-$a"; exit 1; }
+            mkdir -p "pages/$a"
+            find "$d" -type f \( -name '*.apk' -o -name 'APKINDEX.tar.gz' \) \
+              -exec cp -t "pages/$a/" {} +
+            [ -f "pages/$a/APKINDEX.tar.gz" ] \
+              || { echo "::error::$a missing APKINDEX"; exit 1; }
+            ls "pages/$a"/*.apk >/dev/null \
+              || { echo "::error::$a has no apks"; exit 1; }
+          done
+          # every leg must have signed with the same persistent key, and it
+          # must be the committed key if one is tracked in git
+          [ "$(find artifacts -type f -name '*.rsa.pub' -exec sha256sum {} + \
+                | awk '{print $1}' | sort -u | wc -l)" = 1 ] \
+            || { echo "::error::legs signed with different keys"; exit 1; }
+          pub=$(find artifacts -type f -name '*.rsa.pub' | head -1)
+          if [ -f keys/alpine-adbd.rsa.pub ]; then
+            cmp -s "$pub" keys/alpine-adbd.rsa.pub \
+              || { echo "::error::published pubkey differs from keys/alpine-adbd.rsa.pub"; exit 1; }
+          fi
+          cp "$pub" pages/alpine-adbd.rsa.pub
+          touch pages/.nojekyll
+          printf '%s\n' '<!doctype html><meta http-equiv="refresh"' \
+            'content="0; url=https://github.com/Mio-sha512/alpine-adbd/releases">' \
+            > pages/index.html
+          ls -R pages
+
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ./pages
+
+      # deploy-pages serves the artifact directly -- no gh-pages branch is
+      # written, so no token anywhere can push repo content to the site.
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+      - name: publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # apk version = _upstream with the pN suffix rewritten to _pN
+          v=$(sed -n 's/^_upstream=//p' adbd/APKBUILD | sed 's/p/_p/')
+          r=$(sed -n 's/^pkgrel=//p' adbd/APKBUILD)
+          tag="v$v-r$r"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists, skipping"
+            exit 0
+          fi
+          mkdir rel
+          for a in x86_64 aarch64 armv7 riscv64; do
+            for p in "pages/$a"/*.apk; do
+              cp "$p" "rel/$(basename "$p" .apk)-$a.apk"
+            done
+          done
+          cp pages/alpine-adbd.rsa.pub rel/
+          gh release create "$tag" rel/* --title "adbd $v-r$r" --notes "$(cat <<'EOF'
+          Signed `adbd` APKs for Alpine Linux (x86_64, aarch64, armv7, riscv64).
+
+          ## Install via the apk repository
+
+          ```sh
+          wget -q https://mio-sha512.github.io/alpine-adbd/alpine-adbd.rsa.pub -O /etc/apk/keys/alpine-adbd.rsa.pub
+          echo "https://mio-sha512.github.io/alpine-adbd" >> /etc/apk/repositories
+          apk update
+          apk add adbd
+          rc-update add adbd
+          rc-service adbd start
+          ```
+
+          Updates are picked up automatically by `apk upgrade` as new releases get published.
+
+          ## Or download the apks directly
+
+          Grab `adbd-<version>-<arch>.apk` from the assets below, then:
+
+          ```sh
+          apk add --allow-untrusted adbd-*.apk
+          ```
+          EOF
+          )"
