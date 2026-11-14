@@ -1,0 +1,12 @@
+# /etc/conf.d/adbd -- optional overrides for the adbd service.
+#
+# WARNING: this build strips adb authentication entirely. Any TCP listener
+# is an UNAUTHENTICATED ROOT SHELL -- anyone able to reach the port can run
+# `adb connect <ip>:<port>` and get root. Prefer FunctionFS USB (default).
+#
+# TCP listener port (both are honored; ADBD_PORT wins):
+# ADBD_PORT=5555
+# ADB_TCP_PORT=5555
+#
+# Shell executed for `adb shell` (default /bin/sh):
+# ADBD_SHELL=/bin/bash

@@ -1,0 +1,102 @@
+# Contributor: Mio Naganohara <mio@meow.business>
+# Maintainer: Mio Naganohara <mio@meow.business>
+pkgname=adbd
+# upstream tags use "pN" (e.g. 37.0.0p1); apk wants the "_p" form, which
+# also sorts after the plain release
+_upstream=36.0.1
+pkgver=${_upstream/p/_p}
+pkgrel=0
+pkgdesc="Standalone Linux Android Debug Bridge daemon (FunctionFS USB transport)"
+url="https://github.com/nmeum/android-tools"
+arch="aarch64 armv7 riscv64 x86_64"
+license="Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause"
+options="!check"
+subpackages="$pkgname-openrc"
+# no build deps needed when packaging an externally compiled binary
+[ -z "${ADBD_PREBUILT:-}" ] && makedepends="build-base cmake samurai linux-headers"
+_brotli_sha=ed738e842d2fbdf2d6459e39267a633c4a9b2f5d
+_lz4_sha=ebb370ca83af193212df4dcbadcc5d87bc0de2f0
+_zstd_sha=f8745da6ff1ad1e7bab384bd1f9d742439278e99
+source="https://github.com/nmeum/android-tools/releases/download/$_upstream/android-tools-$_upstream.tar.xz
+	https://github.com/google/brotli/archive/$_brotli_sha.tar.gz
+	https://github.com/lz4/lz4/archive/$_lz4_sha.tar.gz
+	https://github.com/facebook/zstd/archive/$_zstd_sha.tar.gz
+	0029-adb-add-Linux-TCP-only-daemon-support.patch
+	0030-adb-enable-FunctionFS-USB-on-standalone-Linux.patch
+	0031-adbd-linux-reboot-service.patch
+	0032-adbd-linux-no-tcp-fallback.patch
+	0033-adbd-linux-shell-tmpdir.patch
+	vendor-CMakeLists.txt
+	CMakeLists.adbd-daemon.txt
+	adbd-stubs.cpp
+	sys-capability.h
+	adbd.initd
+	adbd.confd
+	"
+builddir="$srcdir/android-tools-$_upstream"
+
+# The release tarball ships vendor/ already patched with the upstream series,
+# so ANDROID_TOOLS_PATCH_VENDOR stays OFF; our patches apply on top with patch(1).
+prepare() {
+	# packaging an externally cross-compiled binary: sources still get
+	# fetched and sha512-verified by abuild, but nothing here is used
+	[ -n "$ADBD_PREBUILT" ] && return
+	cd "$builddir"
+	mkdir -p vendor/third_party
+	mv "$srcdir/brotli-$_brotli_sha" vendor/third_party/brotli
+	mv "$srcdir/lz4-$_lz4_sha" vendor/third_party/lz4
+	mv "$srcdir/zstd-$_zstd_sha" vendor/third_party/zstd
+	cp "$srcdir/vendor-CMakeLists.txt" vendor/CMakeLists.txt
+	local p
+	for p in "$srcdir"/00*.patch; do
+		patch -f -p1 -d vendor/adb < "$p"
+	done
+	cp "$srcdir/CMakeLists.adbd-daemon.txt" vendor/
+	mkdir -p vendor/linux-adbd/include/sys
+	cp "$srcdir/adbd-stubs.cpp" vendor/linux-adbd/stubs.cpp
+	cp "$srcdir/sys-capability.h" vendor/linux-adbd/include/sys/capability.h
+}
+
+build() {
+	if [ -n "$ADBD_PREBUILT" ]; then
+		mkdir -p build/vendor
+		cp "$ADBD_PREBUILT" build/vendor/adbd
+		return
+	fi
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DANDROID_TOOLS_PATCH_VENDOR=OFF \
+		-DANDROID_TOOLS_USE_BUNDLED_FMT=ON \
+		-DANDROID_TOOLS_BUILD_ADBD_ONLY=ON \
+		-DANDROID_TOOLS_ADBD_FULLY_STATIC=ON \
+		-DANDROID_TOOLS_ADBD_USB=ON
+	cmake --build build --target adbd
+}
+
+package() {
+	install -Dm0755 build/vendor/adbd "$pkgdir"/usr/sbin/adbd
+}
+
+openrc() {
+	install_if="$pkgname=$pkgver-r$pkgrel openrc"
+	install -Dm0755 "$srcdir"/adbd.initd "$subpkgdir"/etc/init.d/adbd
+	install -Dm0644 "$srcdir"/adbd.confd "$subpkgdir"/etc/conf.d/adbd
+}
+
+sha256sums="
+38e8a84b739480141de0836bf6d581b3339ac7d53d0f7ce8c044a3368c8c2f8f  android-tools-36.0.1.tar.xz
+aaa739962a45b508b2e783b915e6b2b57ed3b12bd4b0feac73acfb144dffa54f  ed738e842d2fbdf2d6459e39267a633c4a9b2f5d.tar.gz
+eb1a93e934d4fd29df6e2061ba0bf447568561764d758f4a5662c0e29370ffa9  ebb370ca83af193212df4dcbadcc5d87bc0de2f0.tar.gz
+4b0bd1f0cfb25e61b9103c35f27395530ff5b4c0d2513a00fd745849e85ea52c  f8745da6ff1ad1e7bab384bd1f9d742439278e99.tar.gz
+6c23084c56d568df974360d036882e50b77bdd3c73306811139e86275d9f2fb5  0029-adb-add-Linux-TCP-only-daemon-support.patch
+4b8dddb2cadba5bb290222974859aa407518ec58ec1bddc13981bc0359516050  0030-adb-enable-FunctionFS-USB-on-standalone-Linux.patch
+0c0f205ef891262935e3bcb5db126ed91264413df741507d4abac5dbd5dd75a6  0031-adbd-linux-reboot-service.patch
+eb7c39fc3574778be4e3d18d50d3c39358f0e71b56224b52696a8089009d1bab  0032-adbd-linux-no-tcp-fallback.patch
+26da48a1441b1d558d12053f20d8af174198a643290eee7b29da2294ec362c24  0033-adbd-linux-shell-tmpdir.patch
+412bd9b52039ec25fdcfe2903fa215f0e095cdd10965fef695c946c8f90dc1ff  vendor-CMakeLists.txt
+732c04a3fae40643614990cac695b580f26fdc5009893216bb26fe0e728a1b64  CMakeLists.adbd-daemon.txt
+ba7a4cd0c40056903d7a69e27d399aca62fbb597b17de57194660f468229dd47  adbd-stubs.cpp
+fa930243b85d24e9e0de76fb141a3406ba4991dba57419daf9c7b8654f6454e6  sys-capability.h
+352f18db5087fb02444b6ee9cc8e831f227c26bedd278fb3e207a39e7e1f7622  adbd.initd
+97aa29fe38b4e97fb934b74a5aed58e89bd18cc709376246dc81fd3e47fafa3d  adbd.confd
+"
