@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# adbd -- Android Debug Bridge daemon (standalone Linux build).
+# USB transport needs a configured configfs gadget with an ffs.adb function
+# mounted at /dev/usb-ffs/adb before start (e.g. a usb-gadget service).
+# Set ADBD_PORT in /etc/conf.d/adbd for TCP transport instead (UNAUTHENTICATED
+# root shell -- see conf.d comments).
+name="adbd"
+description="Android Debug Bridge daemon (functionfs)"
+supervisor="supervise-daemon"
+command="/usr/sbin/adbd"
+respawn_delay="${respawn_delay:-5}"
+error_log="${error_log:-/var/log/adbd.log}"
+
+# conf.d is guaranteed loaded by this point; only exported variables reach
+# the supervise-daemon child -- propagate the documented overrides.
+start_pre() {
+	[ -n "${ADBD_PORT:-}" ] && export ADBD_PORT
+	[ -n "${ADB_TCP_PORT:-}" ] && export ADB_TCP_PORT
+	[ -n "${ADBD_SHELL:-}" ] && export ADBD_SHELL
+	return 0
+}

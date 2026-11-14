@@ -1,0 +1,76 @@
+# Standalone-Linux adbd build — replaces upstream vendor/CMakeLists.txt
+# entirely (installed as vendor/CMakeLists.txt by the build scripts).
+#
+# Preamble mirrors nmeum/android-tools' vendor/CMakeLists.txt (language
+# standards, warning flags, generated-header include path); the tail is
+# derived from happyme531/standalone-linux-adbd: statically-built
+# third-party compression libs plus the CMakeLists.adbd-daemon.txt
+# recipe. Owning the whole file instead of patching upstream's avoids
+# context rot on every android-tools release.
+
+# Use C11 with GNU extensions.
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# Use C++20 with GNU extensions.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(APPLE)
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_DARWIN_C_SOURCE -D__DARWIN_C_LEVEL=__DARWIN_C_FULL")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_DARWIN_C_SOURCE -D__DARWIN_C_LEVEL=__DARWIN_C_FULL")
+endif()
+
+# Different versions of clang require a different set of flags for -ftrivial-auto-var-init
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-ftrivial-auto-var-init=zero" COMPILER_SUPPORTS_TRIVIAL_ZERO_INIT)
+if(COMPILER_SUPPORTS_TRIVIAL_ZERO_INIT)
+	set(VAR_ZERO_INIT_FLAGS "-ftrivial-auto-var-init=zero")
+else()
+	check_cxx_compiler_flag("-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
+			COMPILER_REQUIRES_ENABLE_TRIVIAL_ZERO_INIT)
+	if(COMPILER_REQUIRES_ENABLE_TRIVIAL_ZERO_INIT)
+		set(VAR_ZERO_INIT_FLAGS "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
+	endif()
+endif()
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${VAR_ZERO_INIT_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${VAR_ZERO_INIT_FLAGS}")
+
+# Android seems to use various attributes supported by clang but not by
+# GCC which causes it to emit lots of warnings. Since these attributes
+# don't seem to effect runtime behaviour simply disable the warnings.
+add_compile_options(-Wno-attributes)
+
+# libfsmgr (required by fastboot) requires a 64-bit off_t for lseek. On
+# 32-bit glibc platforms this is not the case by default.
+add_compile_definitions(_FILE_OFFSET_BITS=64 _LARGEFILE64_SOURCE)
+
+option(ANDROID_TOOLS_ADBD_FULLY_STATIC "Fully static-link the standalone Linux adbd daemon" ON)
+option(ANDROID_TOOLS_ADBD_USB "Enable Linux FunctionFS USB transport in adbd" ON)
+
+set(BROTLI_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(fmtlib EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/brotli EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/lz4/build/cmake third_party/lz4-build EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/zstd/build/cmake third_party/zstd-build EXCLUDE_FROM_ALL)
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+include(CMakeLists.adbd-daemon.txt)
+install(TARGETS adbd DESTINATION sbin)
