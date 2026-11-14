@@ -1,0 +1,109 @@
+# Contributor: Mio Naganohara <mio@meow.business>
+# Maintainer: Mio Naganohara <mio@meow.business>
+pkgname=adbd
+# upstream tags use "pN" (e.g. 37.0.0p1); apk wants the "_p" form, which
+# also sorts after the plain release
+_upstream=36.0.1
+pkgver=${_upstream/p/_p}
+pkgrel=0
+pkgdesc="Standalone Linux Android Debug Bridge daemon (FunctionFS USB transport)"
+url="https://github.com/nmeum/android-tools"
+arch="aarch64 armv7 riscv64 x86_64"
+license="Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause"
+options="!check"
+subpackages="$pkgname-openrc"
+# no build deps needed when packaging an externally compiled binary
+[ -z "${ADBD_PREBUILT:-}" ] && makedepends="build-base cmake samurai linux-headers"
+_brotli_sha=ed738e842d2fbdf2d6459e39267a633c4a9b2f5d
+_lz4_sha=ebb370ca83af193212df4dcbadcc5d87bc0de2f0
+_zstd_sha=f8745da6ff1ad1e7bab384bd1f9d742439278e99
+source="https://github.com/nmeum/android-tools/releases/download/$_upstream/android-tools-$_upstream.tar.xz
+	https://github.com/google/brotli/archive/$_brotli_sha.tar.gz
+	https://github.com/lz4/lz4/archive/$_lz4_sha.tar.gz
+	https://github.com/facebook/zstd/archive/$_zstd_sha.tar.gz
+	0029-adb-add-Linux-TCP-only-daemon-support.patch
+	0030-adb-enable-FunctionFS-USB-on-standalone-Linux.patch
+	0031-adbd-linux-reboot-service.patch
+	0032-adbd-linux-no-tcp-fallback.patch
+	0033-adbd-linux-shell-tmpdir.patch
+	vendor-CMakeLists.txt
+	CMakeLists.adbd-daemon.txt
+	adbd-stubs.cpp
+	sys-capability.h
+	protobuf-descriptor.h
+	protobuf-coded-stream.h
+	adbd.initd
+	adbd.confd
+	"
+builddir="$srcdir/android-tools-$_upstream"
+
+# The release tarball ships vendor/ already patched with the upstream series,
+# so ANDROID_TOOLS_PATCH_VENDOR stays OFF; our patches apply on top with patch(1).
+prepare() {
+	# packaging an externally cross-compiled binary: sources still get
+	# fetched and sha512-verified by abuild, but nothing here is used
+	[ -n "$ADBD_PREBUILT" ] && return
+	cd "$builddir"
+	mkdir -p vendor/third_party
+	mv "$srcdir/brotli-$_brotli_sha" vendor/third_party/brotli
+	mv "$srcdir/lz4-$_lz4_sha" vendor/third_party/lz4
+	mv "$srcdir/zstd-$_zstd_sha" vendor/third_party/zstd
+	cp "$srcdir/vendor-CMakeLists.txt" vendor/CMakeLists.txt
+	local p
+	for p in "$srcdir"/00*.patch; do
+		patch -f -p1 -d vendor/adb < "$p"
+	done
+	cp "$srcdir/CMakeLists.adbd-daemon.txt" vendor/
+	mkdir -p vendor/linux-adbd/include/sys vendor/linux-adbd/include/google/protobuf/io
+	cp "$srcdir/adbd-stubs.cpp" vendor/linux-adbd/stubs.cpp
+	cp "$srcdir/sys-capability.h" vendor/linux-adbd/include/sys/capability.h
+	# satisfy sysdeps.h's __has_include protobuf probes without dragging in absl
+	cp "$srcdir/protobuf-descriptor.h" vendor/linux-adbd/include/google/protobuf/descriptor.h
+	cp "$srcdir/protobuf-coded-stream.h" vendor/linux-adbd/include/google/protobuf/io/coded_stream.h
+}
+
+build() {
+	if [ -n "$ADBD_PREBUILT" ]; then
+		mkdir -p build/vendor
+		cp "$ADBD_PREBUILT" build/vendor/adbd
+		return
+	fi
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DANDROID_TOOLS_PATCH_VENDOR=OFF \
+		-DANDROID_TOOLS_USE_BUNDLED_FMT=ON \
+		-DANDROID_TOOLS_BUILD_ADBD_ONLY=ON \
+		-DANDROID_TOOLS_ADBD_FULLY_STATIC=ON \
+		-DANDROID_TOOLS_ADBD_USB=ON
+	cmake --build build --target adbd
+}
+
+package() {
+	install -Dm0755 build/vendor/adbd "$pkgdir"/usr/sbin/adbd
+}
+
+openrc() {
+	install_if="$pkgname=$pkgver-r$pkgrel openrc"
+	install -Dm0755 "$srcdir"/adbd.initd "$subpkgdir"/etc/init.d/adbd
+	install -Dm0644 "$srcdir"/adbd.confd "$subpkgdir"/etc/conf.d/adbd
+}
+
+sha512sums="
+f51e6b2197f455c3192fe27ba5c1bc04edfb6d37f20208c64a7c17a9c54e3d1d327c1d8a52014ecb3ec4bc1fae5a1205dea2fc54017dfada5a10ce6435405379  android-tools-36.0.1.tar.xz
+f493e7f15ca2804ae8715e48bdc954680f527533e684ec3762a7d49d05890915194289ed948c8cce95644274e1dcab952dcfbc84c0108aaf79f35f20270ffe6a  ed738e842d2fbdf2d6459e39267a633c4a9b2f5d.tar.gz
+35c21a5d9cfb5bbf314a5321d02b36819491d2ee3cf8007030ca09d13ca4dae672247b7aeab553e973093604fc48221cb03dc92197c6efe8fc3746891363fdab  ebb370ca83af193212df4dcbadcc5d87bc0de2f0.tar.gz
+3a3e8c5324bc66ca5cdaf83d26df16cdb7b67453277c2764df40171b6787d65aa0eedc9e61256acc95867904b81d4ed570b16edf1e540a9776dd86f70b8b0f37  f8745da6ff1ad1e7bab384bd1f9d742439278e99.tar.gz
+d2787822e5355788dae63466a785672992b2ad3311cf443c25712cb476bb06631c213154cb0a072d6a668d9aa8bce81e6c8e7f0d8140601e140e6b27d6503508  0029-adb-add-Linux-TCP-only-daemon-support.patch
+7fe6dff603725fbfa9cbb08bda57d35f0fe2fe8bf8df13ac8c4e165bb73fc3263c37b7b6711e4d44d115fbab8aaf130dacdbdc28179fe55df950b523ccd7c002  0030-adb-enable-FunctionFS-USB-on-standalone-Linux.patch
+866984bb6c5264fe99c847e0cb6c34cdd78f649271e257d30bf1f3c62c7ea7bd89fc8f3f281e9e0fceb28ffa7b5cafdd00963fc98b6a07f18d60d8d23ec627da  0031-adbd-linux-reboot-service.patch
+f6ad933cbf1afec0667ad34110141060dbd9ff380c9a325885fb57bdd2ea89ada9a85488b812fedd004fc7e636fdc20427d0221db885d5377c18b0aba025739c  0032-adbd-linux-no-tcp-fallback.patch
+9bdd038e924466a2aa9c661d2bf07b8149ec7b219466d9f7afc5421b35ef0b37dfc246682d37101a0d604e4543126e2c965a4c7e43887cd120926d039b9fc8d6  0033-adbd-linux-shell-tmpdir.patch
+287fd9e6271f66bbd727e6c7608dd16061335f268ccd7889b80cb5c4c09ed8190347e557249a8b8eaf032240596c54568a183b682bc32558c37e17620643ade5  protobuf-descriptor.h
+b0fe6f6ae2c653ce0a31c5f71e84df88be1a4d106898f4e713f55a8fcc95845d72c7a24e6bcec46eb6a1caf63deb75dc5f8e8b74e0574fe431ee43967401108d  protobuf-coded-stream.h
+836285c6c0b4acf879d34ec766e06a8404724c22e4ff378456e5861ebe5206b1f218b8899ee9737182110c5a121b56c2a81f63670ac989fdc242679ecde35d55  vendor-CMakeLists.txt
+2e33c3716dc4c6c5250467efed37bd5b829f873cd830d357e6f286c30b6e61eaa768d7c17bf133b53a7040b03069f99ca086f279497f89b636784ca9aa7f0e62  CMakeLists.adbd-daemon.txt
+606b22120c9a4077547b417b7de8560de9572e317f4113419a5f3573d78fe43a9ed28ebf907f8e7afc2b7de296c1cc9bc0f00cd7d68b420403e3fe51c313a85a  adbd-stubs.cpp
+e313ebd9e48f8bfd4029f134f08a60f30f3200d1bf288161aa4773389d32133b1e67c3ad01db96b443b7c0956cc9b93b0bc7f1479b835498ae5ae7e69d924501  sys-capability.h
+fa8df8deafc038471c5fbc838d0da23ba892f5a171ab18f7026126d0b7bba1dcf6aff38a9fd1599546b51d0030bb36b6cf5ae9a2c992351eda681643e38a9215  adbd.initd
+47e5848fd30d05e9fbf52738cc2f3b1b6b11637b4fb10b00889a586935b391f060c1dd903e570fd87cb13058226909afe7d3f53ec685f79cc36dd9496019df3f  adbd.confd
+"
