@@ -1,0 +1,36 @@
+Credits / provenance
+====================
+
+This repository builds standalone-Linux adbd .apk packages for Alpine from
+nmeum/android-tools release sources (https://github.com/nmeum/android-tools).
+
+The Linux-adbd enablement (crypto removal, FunctionFS USB, auth/jdwp stubs,
+CMake recipe) is the work of happyme531 in
+https://github.com/happyme531/standalone-linux-adbd. Patches are used verbatim
+where noted. Patch authorship is preserved in each patch file's From: header.
+
+From happyme531/standalone-linux-adbd (verbatim):
+  adbd/0029-adb-add-Linux-TCP-only-daemon-support.patch
+  adbd/0030-adb-enable-FunctionFS-USB-on-standalone-Linux.patch
+  adbd/vendor-CMakeLists.txt           (derived from his vendor/CMakeLists.txt
+                                        edits; replaces the file outright so no
+                                        context can rot on version bumps)
+  adbd/CMakeLists.adbd-daemon.txt     (verbatim except for two small additions:
+                                        sockets_utils.cpp for android-tools
+                                        >= 37, and a libatomic check needed on
+                                        riscv64)
+  adbd/adbd-stubs.cpp                  (vendor/linux-adbd/stubs.cpp; one
+                                        help string reworded for USB builds)
+  adbd/sys-capability.h                (vendor/linux-adbd/include/sys/capability.h)
+  cmake/toolchains/aarch64-linux-gnu.cmake
+  cmake/toolchains/armv7-linux-gnueabihf.cmake   (same layout, retargeted)
+  cmake/toolchains/riscv64-linux-gnu.cmake       (same layout, retargeted)
+
+Original (Mio Naganohara <mio@meow.business>):
+  adbd/0031-adbd-linux-reboot-service.patch
+  adbd/0032-adbd-linux-no-tcp-fallback.patch
+  adbd/0033-adbd-linux-shell-tmpdir.patch
+  adbd/adbd.initd, adbd/adbd.confd, adbd/APKBUILD, scripts/,
+  .github/workflows/
+
+License: Apache-2.0 (see LICENSE), matching AOSP and android-tools.

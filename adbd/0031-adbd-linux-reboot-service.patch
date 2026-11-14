@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mio Naganohara <mio@meow.business>
+Date: Sat, 14 Nov 2026 12:00:00 +0100
+Subject: [PATCH] adbd: enable reboot: service on standalone Linux
+
+Upstream gates the reboot: service behind __ANDROID__, so a Linux adbd
+cannot serve 'adb reboot'. Ungate it for the standalone Linux target.
+reboot_device() falls through to exec /system/bin/reboot <arg> via
+StartSubprocess; distros provide that path as a wrapper mapping reboot
+modes (e.g. "bootloader") to the platform.
+---
+ daemon/services.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/daemon/services.cpp b/daemon/services.cpp
+index 1234567..abcdefg 100644
+--- a/daemon/services.cpp
++++ b/daemon/services.cpp
+@@ -326,6 +326,15 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+     }
+ #endif
+ 
++#if defined(ADB_STANDALONE_LINUX)
++    // On standalone Linux, keep the reboot: service; it execs
++    // /system/bin/reboot which distros provide as a wrapper around the
++    // platform's reboot mechanism (e.g. reboot-mode for lk2nd/fastboot).
++    if (android::base::ConsumePrefix(&name, "reboot:")) {
++        return reboot_device(std::string(name));
++    }
++#endif
++
+     if (android::base::ConsumePrefix(&name, "dev:")) {
+         return unique_fd{unix_open(name, O_RDWR | O_CLOEXEC)};
+     } else if (android::base::ConsumePrefix(&name, "dev-raw:")) {
+-- 
+2.54.0
+

@@ -1,0 +1,16 @@
+work/
+out/
+packages/
+*.apk
+*.rej
+*.orig
+*.pem
+*.rsa
+/keys/*
+!/keys/*.rsa.pub
+adbd/src/
+adbd/pkg/
+adbd/*.tar.*
+bin/
+artifacts/
+pages/

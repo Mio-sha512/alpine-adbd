@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "mode": "full",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "nmeum/android-tools: bump _upstream tag and the tarball sha256 in one update",
+      "fileMatch": ["^adbd/APKBUILD$"],
+      "matchStrings": [
+        "_upstream=(?<currentValue>[0-9a-zA-Z._-]+)\\n",
+        "(?<currentDigest>[0-9a-f]{64})  android-tools-(?<currentValue>[0-9a-zA-Z._-]+)\\.tar\\.xz\\n"
+      ],
+      "depNameTemplate": "nmeum/android-tools",
+      "datasourceTemplate": "github-release-attachments",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(p(?<build>\\d+))?$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "android-tools bumps: one renovate commit carries tag+sha256; CI builds, maintainer merges after review",
+      "matchDepNames": ["nmeum/android-tools"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Only nmeum bumps flow through the PR gate; pinned action SHAs are refreshed deliberately",
+      "matchManagers": ["github-actions"],
+      "enabled": false
+    }
+  ]
+}
