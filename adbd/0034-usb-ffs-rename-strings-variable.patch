@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mio Naganohara <mio@meow.business>
+Date: Sat, 14 Nov 2026 12:00:00 +0100
+Subject: [PATCH] usb_ffs: rename the strings descriptor variable
+
+sysdeps.h pulls in <google/protobuf/io/coded_stream.h> whenever protobuf
+headers happen to exist on the build host (__has_include), which makes
+absl::strings collide with this file-local `strings` variable. Cross
+sysroots never see it; a native build with protobuf headers installed
+fails with 'strings redeclared as different kind of entity'. Rename it.
+---
+ daemon/usb_ffs.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/usb_ffs.cpp b/daemon/usb_ffs.cpp
+index 1234567..abcdefg 100644
+--- a/daemon/usb_ffs.cpp
++++ b/daemon/usb_ffs.cpp
+@@ -243,10 +243,10 @@ static const struct {
+         __le16 code;
+         const char str1[sizeof(STR_INTERFACE_)];
+     } __attribute__((packed)) lang0;
+-} __attribute__((packed)) strings = {
++} __attribute__((packed)) ffs_strings = {
+     .header = {
+         .magic = cpu_to_le32(FUNCTIONFS_STRINGS_MAGIC),
+-        .length = cpu_to_le32(sizeof(strings)),
++        .length = cpu_to_le32(sizeof(ffs_strings)),
+         .str_count = cpu_to_le32(1),
+         .lang_count = cpu_to_le32(1),
+     },
+@@ -302,7 +302,7 @@ bool open_functionfs(android::base::unique_fd* out_control, android::base::uniqu
+             }
+         }
+ 
+-        if (adb_write(control.get(), &strings, sizeof(strings)) < 0) {
++        if (adb_write(control.get(), &ffs_strings, sizeof(ffs_strings)) < 0) {
+             PLOG(ERROR) << "failed to write USB strings";
+             return false;
+         }
+-- 
+2.54.0
