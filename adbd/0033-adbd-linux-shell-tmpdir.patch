@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mio Naganohara <mio@meow.business>
+Date: Sat, 14 Nov 2026 12:00:00 +0100
+Subject: [PATCH] adbd: use /tmp as TMPDIR in shell sessions on standalone Linux
+
+Upstream hardcodes Android's /data/local/tmp, which does not exist on a
+standalone Linux rootfs -- anything honoring $TMPDIR (mktemp, editors,
+downloaders) breaks inside `adb shell`. Point it at /tmp instead.
+---
+ daemon/shell_service.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/daemon/shell_service.cpp b/daemon/shell_service.cpp
+index 1234567..abcdefg 100644
+--- a/daemon/shell_service.cpp
++++ b/daemon/shell_service.cpp
+@@ -279,7 +279,11 @@ bool Subprocess::ForkAndExec(std::string* error) {
+         env["HOSTNAME"] = GetHostName();
+         env["LOGNAME"] = pw->pw_name;
+         env["SHELL"] = shell_path;
++#if defined(ADB_STANDALONE_LINUX)
++        env["TMPDIR"] = "/tmp";
++#else
+         env["TMPDIR"] = "/data/local/tmp";
++#endif
+         env["USER"] = pw->pw_name;
+     }
+ 
+-- 
+2.54.0
