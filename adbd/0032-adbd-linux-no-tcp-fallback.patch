@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mio Naganohara <mio@meow.business>
+Date: Sat, 14 Nov 2026 12:00:00 +0100
+Subject: [PATCH] adbd: refuse insecure tcp fallback on standalone Linux
+
+When the FunctionFS endpoint is missing, upstream adbd falls back to an
+auth-less tcp:5555 listener on every interface. Make the standalone
+Linux build exit with an error instead; explicit TCP transport still
+works via ADBD_PORT/ADB_TCP_PORT for setups that want it.
+---
+ daemon/main.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+index 1234567..abcdefg 100644
+--- a/daemon/main.cpp
++++ b/daemon/main.cpp
+@@ -293,6 +293,12 @@ int adbd_main() {
+             addrs.push_back(android::base::StringPrintf("vsock:%d", port));
+             setup_adb(addrs);
+         } else if (!is_usb) {
++#if defined(ADB_STANDALONE_LINUX)
++            LOG(ERROR) << "adbd: FunctionFS endpoint not found and no port "
++                          "configured; refusing insecure tcp fallback "
++                          "(set ADBD_PORT for TCP transport)";
++            return 1;
++#endif
+             // Listen on default port.
+             addrs.push_back(
+                     android::base::StringPrintf("tcp:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));
+-- 
+2.54.0
+
